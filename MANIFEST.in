@@ -1,0 +1,25 @@
+# Include documentation files
+include README.md
+include LICENSE
+include requirements.txt
+include pyproject.toml
+include *.md
+
+# Include package data
+recursive-include gomoku *.py
+recursive-include gomoku *.md
+recursive-include gomoku *.txt
+
+# Include examples
+include demo.py
+
+# Exclude development files
+exclude *.pyc
+exclude .DS_Store
+exclude .gitignore
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * .pytest_cache
+recursive-exclude * .mypy_cache
+recursive-exclude * .coverage
+recursive-exclude * *.egg-info
