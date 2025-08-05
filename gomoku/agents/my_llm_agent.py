@@ -3,22 +3,16 @@
 Stronger **prompt-only** Gomoku agent (8×8, five-in-a-row)
 ==========================================================
 
-**v5.0 – deterministic block / win layer**
------------------------------------------
+**v5.1 – DeepSeek-R1 reasoning + deterministic block/win**
+----------------------------------------------------------
 
-*   **Pre-LLM tactical filter** – before we even ask the language model we now
-    run two lightning-fast scans over the board:
+*   Deterministic **tactical layer** first (win-now / must-block), O(N²).
+*   Otherwise query **DeepSeek-R1-0528-Qwen3-8B** for strategic move.
+*   Accept models that emit <think>…</think> and long CoT; we strip
+    all reasoning and extract the first JSON object containing row/col.
+*   Greedy decoding for stability; no sampling.
 
-    1.  **Win now**   – if *we* already have four in a row with one open end,
-        play that winning move immediately.
-    2.  **Must-block** – if the *opponent* has such a four, we instantly drop a
-        stone in the single empty cell and stop any surprise defeats.
-
-    Both scans are O(N²) with small constants.
-
-*   **Otherwise** we fall back to the same Phi-3 prompt logic as before, so we
-    keep all of its creative search while gaining a solid safety net.
-*   **No API / interface changes** – drop-in replacement.
+Drop-in replacement; no interface changes.
 """
 from __future__ import annotations
 
@@ -82,22 +76,19 @@ except Exception:  # pragma: no cover – editor stub
 
     class HuggingFaceClient:  # type: ignore
         def __init__(self, **_):
-            # Minimal stub; real client lives in ..llm.huggingface_client
-            self.generation_kwargs, self.generation_config = {}, type(
-                "GC", (), {}
-            )()
+            self.generation_kwargs, self.generation_config = {}, type("GC", (), {})()
             self.model = type("M", (), {"config": type("C", (), {})()})()
 
         async def complete(self, _msgs):
-            # Always returns a JSON move
             return '{"row":1,"col":1}'
 
 
 class MyLLMGomokuAgent(Agent):
-    """Prompt-driven Gomoku agent with deterministic tactical layer (v5.0)."""
+    """Prompt-driven Gomoku agent with deterministic tactical layer (v5.1)."""
 
-    MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
-    MAX_ATTEMPTS = 3  # first try + up to two retries
+    # UPDATED: DeepSeek-R1-0528 distilled on Qwen3-8B
+    MODEL_NAME = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    MAX_ATTEMPTS = 4  # one try + up to 3 retries (R1 can be verbose)
 
     # ──────────────────────────────────────────────────────
     def __init__(self, agent_id: str):
@@ -109,12 +100,14 @@ class MyLLMGomokuAgent(Agent):
         # Ensure optional dependency only when the agent is actually instantiated.
         _ = _ensure_transformers()
 
+        # Greedy, short-ish outputs; R1 doesn't need beams for our JSON task.
         hf_kwargs: Dict[str, Any] = {
             "model": self.MODEL_NAME,
             "device": "auto",
-            "max_new_tokens": 128,
+            "trust_remote_code": True,        # many Qwen-derived chat models require this
+            "max_new_tokens": 96,
             "do_sample": False,
-            "num_beams": 4,
+            "num_beams": 1,
             "repetition_penalty": 1.05,
         }
         self.llm_client = HuggingFaceClient(**hf_kwargs)
@@ -127,14 +120,17 @@ class MyLLMGomokuAgent(Agent):
             "# FALL-BACK – if unsure reply {\"row\":4,\"col\":4}"
         )
 
+        # Strong guardrails for R1-style outputs:
         self.system_prompt = (
-            "You are a Gomoku grand-master (8×8, five in a row). "
-            "Return **one-line JSON** exactly: {\"row\":<1-8>,\"col\":<1-8>} (1-based is OK). "
-            "Priorities: 1 Win • 2 Block • 3 Fork • 4 Open-four • 5 Centre."
-            "\n\n"
+            "You are a Gomoku grand-master (8×8, five in a row).\n"
+            "Respond with **exactly one JSON object on the last line**: "
+            "{\"row\":<1-8>,\"col\":<1-8>}.\n"
+            "If you need scratch work, put it inside <think>...</think> and never after the final JSON.\n"
+            "Priorities: 1 Win • 2 Block • 3 Fork • 4 Open-four • 5 Centre.\n\n"
             + examples
             + "\n\n"
-            + "Think silently after ##SCRATCHPAD##. Reply {\"retry\":true} if illegal."
+            "Think silently after ##SCRATCHPAD##. If you output anything else by mistake, "
+            "reply {\"retry\":true}."
         )
 
     # ──────────────────────────────────────────────────────
@@ -166,6 +162,7 @@ class MyLLMGomokuAgent(Agent):
             move = await self._query_llm(msgs, legal_set, size)
             if move is not None:
                 return move
+            # nudge the model to return *only* JSON next round
             msgs.append({"role": "assistant", "content": '{"retry":true}'})
 
         # Last-ditch deterministic move – always legal
@@ -228,10 +225,17 @@ class MyLLMGomokuAgent(Agent):
         return None
 
     # ──────────────────────────────────────────────────────
+    @staticmethod
+    def _strip_reasoning(txt: str) -> str:
+        """Remove any <think>...</think> blocks (DeepSeek-R1 style)."""
+        return re.sub(r"<think>.*?</think>", "", txt, flags=re.DOTALL | re.IGNORECASE)
+
+    # ──────────────────────────────────────────────────────
     async def _query_llm(
         self, msgs, legal_set: set, size: int
     ) -> Optional[Tuple[int, int]]:
         raw = await self.llm_client.complete(msgs)
+        raw = self._strip_reasoning(str(raw))
         move = self._parse_move(raw)
         if move is None:
             return None
@@ -254,25 +258,35 @@ class MyLLMGomokuAgent(Agent):
     # ──────────────────────────────────────────────────────
     @staticmethod
     def _parse_move(raw: str) -> Optional[Tuple[int, int]]:
-        """Accept many JSON-ish formats and return a (row, col) **0-based** tuple."""
-        txt = raw.strip().splitlines()[-1].strip()
+        """
+        Accept many JSON-ish formats and return a (row, col) **0-based** tuple.
+        Strategy:
+          1) Find the first JSON object anywhere with keys row/col.
+          2) Otherwise accept a list like [r, c].
+          3) Otherwise a plain "r, c" pair.
+        """
+        txt = raw.strip()
 
-        # Quick path – looks like a dict / list
-        if txt.startswith("{"):
-            try:
-                data = json.loads(txt)
-                row, col = data.get("row"), data.get("col")
-                return (int(row) - 1, int(col) - 1)
-            except Exception:
-                pass
-        if txt.startswith("["):
-            try:
-                row, col = json.loads(txt)[:2]
-                return (int(row) - 1, int(col) - 1)
-            except Exception:
-                pass
+        # 1) Robust object search anywhere in the text
+        obj_pat = re.compile(
+            r"\{[^{}]*?(?:\"row\"|'row')\s*:\s*(-?\d+)[^{}]*?(?:\"col\"|'col')\s*:\s*(-?\d+)[^{}]*?\}",
+            re.DOTALL | re.IGNORECASE,
+        )
+        m = obj_pat.search(txt)
+        if m:
+            r, c = int(m.group(1)), int(m.group(2))
+            return (r - 1, c - 1)
 
-        # Fallback – brute regex "num , num"
+        # 2) List-like
+        try:
+            if "[" in txt and "]" in txt:
+                arr = json.loads(txt[txt.find("[") : txt.rfind("]") + 1])
+                if isinstance(arr, (list, tuple)) and len(arr) >= 2:
+                    return (int(arr[0]) - 1, int(arr[1]) - 1)
+        except Exception:
+            pass
+
+        # 3) Fallback – "num , num" anywhere
         m = re.search(r"(-?\d+)\s*,\s*(-?\d+)", txt)
         if m:
             row, col = map(lambda x: int(x) - 1, m.groups())
