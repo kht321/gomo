@@ -114,3 +114,6 @@ testpaths = [
     "tests",
 ]
 asyncio_mode = "auto"
+
+[project.scripts]
+gomoku = "gomoku.cli:main"
