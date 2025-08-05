@@ -1,52 +1,69 @@
 # gomoku/agents/my_llm_agent.py
 """
-Stronger **prompt‑only** Gomoku agent (8×8, five‑in‑a‑row)
+Stronger **prompt-only** Gomoku agent (8×8, five-in-a-row)
 ==========================================================
 
 **v5.0 – deterministic block / win layer**
 -----------------------------------------
 
-*   **Pre‑LLM tactical filter** – before we even ask the language model we now
-    run two lightning‑fast scans over the board:
+*   **Pre-LLM tactical filter** – before we even ask the language model we now
+    run two lightning-fast scans over the board:
 
     1.  **Win now**   – if *we* already have four in a row with one open end,
         play that winning move immediately.
-    2.  **Must‑block** – if the *opponent* has such a four, we instantly drop a
+    2.  **Must-block** – if the *opponent* has such a four, we instantly drop a
         stone in the single empty cell and stop any surprise defeats.
 
-    Both scans are O(8²) and therefore negligible.
+    Both scans are O(N²) with small constants.
 
-*   **Otherwise** we fall back to the same Phi‑3 prompt logic as before, so we
+*   **Otherwise** we fall back to the same Phi-3 prompt logic as before, so we
     keep all of its creative search while gaining a solid safety net.
-*   **No API / interface changes** – drop‑in replacement.
+*   **No API / interface changes** – drop-in replacement.
 """
 from __future__ import annotations
 
 import json
 import os
-import random
 import re
 import warnings
-from typing import Any, Dict, List, Sequence, Tuple, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ────────────────────────────────────────────────────────────
-# Silence *all* Transformers output **before** importing lib
+# Keep Transformers quiet if present; do NOT import it yet.
 # ────────────────────────────────────────────────────────────
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
-import transformers  # noqa:  isort: skip
 
-warnings.filterwarnings("ignore", category=UserWarning, module=r"transformers")
-transformers.logging.set_verbosity_error()
+def _ensure_transformers():
+    """
+    Lazy/optional import for `transformers` to avoid import-time failures
+    when extras aren't installed. Call only when the agent is actually used.
+    """
+    try:
+        import transformers as _t  # type: ignore
+        try:
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, module=r"transformers"
+            )
+            _t.logging.set_verbosity_error()
+        except Exception:
+            pass
+        return _t
+    except Exception as e:  # pragma: no cover
+        raise ImportError(
+            "MyLLMGomokuAgent requires the 'transformers' extra. "
+            "Install the repo with extras: pip install -e .[huggingface]"
+        ) from e
+
 
 # ────────────────────────────────────────────────────────────
-# Framework fall‑back stubs (for lint / notebooks only)
+# Framework imports (with fallbacks for editors/notebooks)
 # ────────────────────────────────────────────────────────────
 try:
     from .base import Agent
     from ..core.models import GameState
     from ..llm.huggingface_client import HuggingFaceClient
-except ImportError:  # pragma: no cover – editor stub
+except Exception:  # pragma: no cover – editor stub
 
     class Agent:  # type: ignore
         def __init__(self, agent_id: str):
@@ -65,15 +82,19 @@ except ImportError:  # pragma: no cover – editor stub
 
     class HuggingFaceClient:  # type: ignore
         def __init__(self, **_):
-            self.generation_kwargs, self.generation_config = {}, transformers.GenerationConfig()
-            self.model = type("DummyModel", (), {"config": transformers.PretrainedConfig()})()
+            # Minimal stub; real client lives in ..llm.huggingface_client
+            self.generation_kwargs, self.generation_config = {}, type(
+                "GC", (), {}
+            )()
+            self.model = type("M", (), {"config": type("C", (), {})()})()
 
-        async def complete(self, _):
-            return "{\"row\":0,\"col\":0}"
+        async def complete(self, _msgs):
+            # Always returns a JSON move
+            return '{"row":1,"col":1}'
 
 
 class MyLLMGomokuAgent(Agent):
-    """Prompt‑driven Gomoku agent with deterministic tactical layer (v5.0)."""
+    """Prompt-driven Gomoku agent with deterministic tactical layer (v5.0)."""
 
     MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
     MAX_ATTEMPTS = 3  # first try + up to two retries
@@ -85,6 +106,9 @@ class MyLLMGomokuAgent(Agent):
 
     # ──────────────────────────────────────────────────────
     def _setup(self):
+        # Ensure optional dependency only when the agent is actually instantiated.
+        _ = _ensure_transformers()
+
         hf_kwargs: Dict[str, Any] = {
             "model": self.MODEL_NAME,
             "device": "auto",
@@ -98,24 +122,27 @@ class MyLLMGomokuAgent(Agent):
 
         examples = (
             "# WIN – (2,4) completes five → {\"row\":2,\"col\":4}\n"
-            "# WIN(1‑based) – (5,1) human input → {\"row\":5,\"col\":1}\n"
+            "# WIN(1-based) – (5,1) human input → {\"row\":5,\"col\":1}\n"
             "# BLOCK – swap axis (returns 3,6) → {\"row\":3,\"col\":6}\n"
-            "# FALL‑BACK – if unsure reply {\"row\":4,\"col\":4}"
+            "# FALL-BACK – if unsure reply {\"row\":4,\"col\":4}"
         )
 
         self.system_prompt = (
-            "You are a Gomoku grand‑master (8×8, five in a row). "
-            "Return **one‑line JSON** exactly: {\"row\":<1‑8>,\"col\":<1‑8>} (1‑based is OK). "
-            "Priorities: 1 Win • 2 Block • 3 Fork • 4 Open‑four • 5 Centre."\
-            "\n\n" + examples + "\n\n" +
-            "Think silently after ##SCRATCHPAD##. Reply {\"retry\":true} if illegal."
+            "You are a Gomoku grand-master (8×8, five in a row). "
+            "Return **one-line JSON** exactly: {\"row\":<1-8>,\"col\":<1-8>} (1-based is OK). "
+            "Priorities: 1 Win • 2 Block • 3 Fork • 4 Open-four • 5 Centre."
+            "\n\n"
+            + examples
+            + "\n\n"
+            + "Think silently after ##SCRATCHPAD##. Reply {\"retry\":true} if illegal."
         )
 
     # ──────────────────────────────────────────────────────
     async def get_move(self, state: GameState) -> Tuple[int, int]:
         legal_moves: Sequence[Tuple[int, int]] = state.get_legal_moves()
         legal_set = set(legal_moves)
-        turn_no = state.board_size * state.board_size - len(legal_moves)
+        size = state.board_size
+        turn_no = size * size - len(legal_moves)
 
         # 1️⃣ deterministic win / block check -----------------------------
         must_play = self._tactical_forcing_move(state, legal_set)
@@ -136,17 +163,19 @@ class MyLLMGomokuAgent(Agent):
         ]
 
         for _ in range(self.MAX_ATTEMPTS):
-            move = await self._query_llm(msgs, legal_set)
+            move = await self._query_llm(msgs, legal_set, size)
             if move is not None:
                 return move
-            msgs.append({"role": "assistant", "content": "{\"retry\":true}"})
+            msgs.append({"role": "assistant", "content": '{"retry":true}'})
 
-        # Last‑ditch deterministic move – always legal
+        # Last-ditch deterministic move – always legal
         return legal_moves[0]
 
     # ──────────────────────────────────────────────────────
-    def _tactical_forcing_move(self, state: GameState, legal_set: set) -> Optional[Tuple[int, int]]:
-        """Return an immediate **win** or **must‑block** move if present."""
+    def _tactical_forcing_move(
+        self, state: GameState, legal_set: set
+    ) -> Optional[Tuple[int, int]]:
+        """Return an immediate **win** or **must-block** move if present."""
         me = state.current_player.value
         opp = "O" if me == "X" else "X"
         board = state.board
@@ -185,11 +214,13 @@ class MyLLMGomokuAgent(Agent):
         win_move = scan(me)
         if win_move:
             return win_move
-        # then look for blocks against opponent four‑in‑a‑row
+        # then look for blocks against opponent four-in-a-row
         return scan(opp)
 
     @staticmethod
-    def _window_match(window: List[Tuple[int, int]], board, char: str) -> Optional[Tuple[int, int]]:
+    def _window_match(
+        window: List[Tuple[int, int]], board, char: str
+    ) -> Optional[Tuple[int, int]]:
         chars = [board[r][c] for r, c in window]
         if chars.count(char) == 4 and chars.count(".") == 1:
             idx = chars.index(".")
@@ -197,7 +228,9 @@ class MyLLMGomokuAgent(Agent):
         return None
 
     # ──────────────────────────────────────────────────────
-    async def _query_llm(self, msgs, legal_set):
+    async def _query_llm(
+        self, msgs, legal_set: set, size: int
+    ) -> Optional[Tuple[int, int]]:
         raw = await self.llm_client.complete(msgs)
         move = self._parse_move(raw)
         if move is None:
@@ -206,11 +239,11 @@ class MyLLMGomokuAgent(Agent):
         r, c = move
         # ── build *all* plausible normalisations ──
         candidates = set()
-        # try independent 0/1‑based adjustments + axis swap
+        # try independent 0/1-based adjustments + axis swap
         for dr in (r, r - 1):
             for dc in (c, c - 1):
                 for rr, cc in ((dr, dc), (dc, dr)):
-                    if 0 <= rr < 8 and 0 <= cc < 8:
+                    if 0 <= rr < size and 0 <= cc < size:
                         candidates.add((rr, cc))
         # pick the *first* legal candidate (stable order for determinism)
         for cand in sorted(candidates):
@@ -221,7 +254,7 @@ class MyLLMGomokuAgent(Agent):
     # ──────────────────────────────────────────────────────
     @staticmethod
     def _parse_move(raw: str) -> Optional[Tuple[int, int]]:
-        """Accept many JSON-ish formats and return a (row, col) **0‑based** tuple."""
+        """Accept many JSON-ish formats and return a (row, col) **0-based** tuple."""
         txt = raw.strip().splitlines()[-1].strip()
 
         # Quick path – looks like a dict / list
@@ -254,7 +287,13 @@ class MyLLMGomokuAgent(Agent):
                 self.llm_client.generation_kwargs.pop(k, None)
         if hasattr(self.llm_client, "generation_config"):
             for k in bad:
-                setattr(self.llm_client.generation_config, k, None)
+                try:
+                    setattr(self.llm_client.generation_config, k, None)
+                except Exception:
+                    pass
         if hasattr(self.llm_client, "model") and hasattr(self.llm_client.model, "config"):
             for k in bad:
-                setattr(self.llm_client.model.config, k, None)
+                try:
+                    setattr(self.llm_client.model.config, k, None)
+                except Exception:
+                    pass
