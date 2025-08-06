@@ -29,6 +29,16 @@ class GomokuGame:
     def current_player(self) -> Player:
         """Get the current player."""
         return self.state.current_player
+    
+    def new_game(self) -> GameState:
+        """Reset and start a new game."""
+        self.state = GameState(
+            board=_create_empty_board(self.state.board_size),
+            current_player=Player.BLACK,
+            move_history=[],
+            board_size=self.state.board_size,
+        )
+        return self.state
 
 
     def make_move(self, row: int, col: int) -> bool:
