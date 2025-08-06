@@ -261,6 +261,12 @@ class HuggingFaceClient(LLMClient):
 # --- END PATCH ---
 HuggingFacePipelineClient = HuggingFaceClient
 
+POPULAR_MODELS = {
+    "phi3": "microsoft/Phi-3-mini-4k-instruct",
+    "qwen2": "Qwen/Qwen2-7B-Instruct",
+    "deepseek": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+}
+
 def create_huggingface_client(**kwargs):
     """Return a new `HuggingFaceClient` (legacy import shim)."""
     return HuggingFaceClient(**kwargs)
