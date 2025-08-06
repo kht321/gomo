@@ -102,13 +102,14 @@ class MyLLMGomokuAgent(Agent):
 
         # Greedy, short-ish outputs; R1 doesn't need beams for our JSON task.
         hf_kwargs: Dict[str, Any] = {
-            "model": self.MODEL_NAME,
-            "device": "auto",
-            "trust_remote_code": True,        # many Qwen-derived chat models require this
-            "max_new_tokens": 96,
-            "do_sample": False,
-            "num_beams": 1,
-            "repetition_penalty": 1.05,
+        "model": self.MODEL_NAME,
+        "load_in_4bit": True,                      # Enable 4-bit quantization
+        "bnb_4bit_compute_dtype": "bfloat16",      # Optimal for supported GPUs
+        "device_map": "auto",                      # Distribute model across GPUs/RAM efficiently
+        "trust_remote_code": True,
+        "max_new_tokens": 96,
+        "do_sample": False,
+        "repetition_penalty": 1.05,
         }
         self.llm_client = HuggingFaceClient(**hf_kwargs)
         self._purge_sampling_keys()
