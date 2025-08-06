@@ -4,7 +4,7 @@ import random
 from typing import Tuple
 from .base import Agent
 from ..core.models import GameState, Player
-from ..core.game_logic import GomokuGame
+from ..core.game import GomokuGame
 
 
 class SimpleGomokuAgent(Agent):

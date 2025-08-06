@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Dict, List
 from ..core.models import GameState, Player, GameResult, Move
-from ..core.game_logic import GomokuGame
+from ..core.game import GomokuGame
 from ..core.interfaces import BoardFormatter
 from ..agents.base import Agent
 from ..utils.visualization import ColorBoardFormatter
