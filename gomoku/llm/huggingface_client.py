@@ -259,3 +259,4 @@ class HuggingFaceClient(LLMClient):
             "Use a chat-compatible model or pass a simple string prompt instead."
         )
 # --- END PATCH ---
+HuggingFacePipelineClient = HuggingFaceClient
