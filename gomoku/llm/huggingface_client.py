@@ -260,3 +260,7 @@ class HuggingFaceClient(LLMClient):
         )
 # --- END PATCH ---
 HuggingFacePipelineClient = HuggingFaceClient
+
+def create_huggingface_client(**kwargs):
+    """Return a new `HuggingFaceClient` (legacy import shim)."""
+    return HuggingFaceClient(**kwargs)
