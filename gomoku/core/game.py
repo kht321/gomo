@@ -52,6 +52,18 @@ class GomokuGame:
         # Switch player
         self.state.current_player = Player.WHITE if self.state.current_player == Player.BLACK else Player.BLACK
         return True
+    
+    def apply_move(self, state: GameState, move: Move) -> GameState:
+        """Apply a move and return a new game state."""
+        if not state.is_valid_move(move.row, move.col):
+            raise ValueError(f"Invalid move: ({move.row}, {move.col})")
+
+        # Create a deep copy of the current state
+        new_state = state.copy()
+        new_state.board[move.row][move.col] = move.player.value
+        new_state.move_history.append(move)
+        new_state.current_player = Player.WHITE if move.player == Player.BLACK else Player.BLACK
+        return new_state
 
     def check_winner(self) -> Optional[Player]:
         """Check if there's a winner."""
