@@ -87,7 +87,7 @@ class MyLLMGomokuAgent(Agent):
     """Prompt-driven Gomoku agent with deterministic tactical layer (v5.1)."""
 
     # UPDATED: DeepSeek-R1-0528 distilled on Qwen3-8B
-    MODEL_NAME = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
     MAX_ATTEMPTS = 4  # one try + up to 3 retries (R1 can be verbose)
 
     # ──────────────────────────────────────────────────────
